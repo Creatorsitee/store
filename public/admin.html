@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin</title>
+<style>
+:root{--bg:#eef2ef;--ink:#14231f;--mute:#566660;--line:#cfd8d3;--accent:#2f5bff;--accent-ink:#fff;--bad:#d6453d}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1714;--ink:#e6efea;--mute:#93a69d;--line:#26362f;--accent:#7b97ff;--accent-ink:#0e1714;--bad:#ff7a70}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.5 system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:32px 20px}
+h1{margin:0 0 16px;font-size:1.6rem}
+input,select,button{font:inherit;padding:8px 12px;border-radius:4px;border:1px solid var(--line);background:transparent;color:inherit}
+button{background:var(--accent);color:var(--accent-ink);border:0;cursor:pointer}
+button.sm{padding:4px 10px;font-size:13px;margin:2px}
+button.warn{background:var(--bad)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.stats{display:flex;gap:28px;margin:12px 0 20px;color:var(--mute)}
+.stats b{display:block;font-size:1.4rem;color:var(--ink)}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:820px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500}
+code{font-size:12px}
+.err{color:var(--bad)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Pesanan</h1>
+  <div class="bar">
+    <input id="token" type="password" placeholder="Admin token" autocomplete="off">
+    <button id="load">Muat</button>
+    <select id="filter" aria-label="Filter status">
+      <option value="">Semua status</option>
+      <option>active</option><option>awaiting_payment</option><option>provisioning</option>
+      <option>failed</option><option>expired</option><option>deleted</option>
+    </select>
+    <input id="q" placeholder="Cari email / username / kode">
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>Dibuat</th><th>Pelanggan</th><th>Paket</th><th>Status</th><th>Aktif sampai</th><th>Aksi</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p id="msg" role="status"></p>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const rp = n => 'Rp' + n.toLocaleString('id-ID');
+const fmt = t => t ? new Date(t).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' }) : '-';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let orders = [];
+
+$('#token').value = sessionStorage.getItem('adm') || '';
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch(path, {
+    method,
+    headers: { 'x-admin-token': $('#token').value, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) throw new Error('Token salah');
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'Gagal (' + r.status + ')');
+  return d;
+}
+
+async function load() {
+  try {
+    sessionStorage.setItem('adm', $('#token').value);
+    const d = await api('/api/admin/orders');
+    orders = d.orders;
+    $('#stats').innerHTML = `<div><b>${d.stats.total}</b>pesanan</div><div><b>${d.stats.active}</b>aktif</div><div><b>${rp(d.stats.revenue)}</b>nilai paket aktif</div>`;
+    $('#msg').textContent = '';
+    draw();
+  } catch (e) { $('#msg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+function actions(o) {
+  const b = (a, label, cls = '') => `<button class="sm ${cls}" data-id="${o.id}" data-a="${a}">${label}</button>`;
+  let h = '';
+  if (o.hasServer && o.status === 'active') {
+    h += o.suspended ? b('unsuspend', 'Aktifkan') : b('suspend', 'Tangguhkan');
+    h += b('extend', '+30 hari') + b('delete', 'Hapus server', 'warn');
+  }
+  if (['awaiting_payment', 'failed', 'expired'].includes(o.status)) {
+    h += b('paid', 'Tandai lunas') + (o.status === 'failed' ? b('retry', 'Ulangi') : '');
+  }
+  return h;
+}
+
+function draw() {
+  const f = $('#filter').value, q = $('#q').value.toLowerCase();
+  $('#rows').innerHTML = orders
+    .filter(o => (!f || o.status === f) && (!q || [o.email, o.username, o.id].join(' ').toLowerCase().includes(q)))
+    .map(o => `<tr>
+      <td>${fmt(o.createdAt)}</td>
+      <td>${esc(o.email)}<br>${esc(o.username)}<br><code>${esc(o.id)}</code></td>
+      <td>${esc(o.plan)}${o.kind === 'renew' ? '<br>perpanjangan' : ''}</td>
+      <td>${esc(o.status)}${o.suspended ? '<br><span class="err">ditangguhkan</span>' : ''}${o.error ? `<br><span class="err">${esc(o.error)}</span>` : ''}</td>
+      <td>${fmt(o.paidUntil)}</td>
+      <td>${actions(o)}</td></tr>`).join('') || '<tr><td colspan="6">Tidak ada data</td></tr>';
+}
+
+$('#rows').addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const { id, a } = b.dataset;
+  if (a === 'delete' && !confirm('Hapus server ini dari panel? Data pelanggan hilang permanen.')) return;
+  if (a === 'paid' && !confirm('Tandai lunas dan buat server sekarang? Pastikan uang sudah masuk.')) return;
+  b.disabled = true;
+  try { await api(`/api/admin/orders/${id}/${a}`, 'POST', {}); await load(); }
+  catch (err) { $('#msg').innerHTML = `<span class="err">${esc(err.message)}</span>`; b.disabled = false; }
+});
+
+$('#load').onclick = load;
+$('#filter').onchange = $('#q').oninput = draw;
+if ($('#token').value) load();
+setInterval(() => { if ($('#token').value && !document.hidden) load(); }, 15000);
+</script>
+</body>
+</html>
