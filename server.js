@@ -5,7 +5,6 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const QRCode = require('qrcode');
 const tako = require('./tako');
-const mail = require('./mailer');
 
 const {
   PANEL_URL, PANEL_API_KEY, NEST_ID, EGG_ID,
@@ -145,13 +144,7 @@ async function markPaid(o) {
   try {
     await (o.kind === 'renew' ? renew(o) : provision(o));
     bus.emit(o.id, o);
-    const until = new Date(o.kind === 'renew' ? o.result.paidUntil : o.paidUntil).toLocaleDateString('id-ID');
-    if (o.kind === 'renew') {
-      mail.send(o.email, 'Perpanjangan berhasil', `Server Anda aktif sampai ${until}.\nKode pesanan: ${o.parent}`);
-    } else {
-      mail.send(o.email, 'Server Anda siap',
-        `Panel: ${PANEL_URL}\nLogin dengan email: ${o.email}\nKode pesanan: ${o.id}\nAktif sampai: ${until}\n\nSimpan kode pesanan untuk cek dan perpanjangan.`);
-    }
+
   } catch (e) {
     console.error('Provision gagal:', e.message);
     update(o, { status: 'failed', error: 'Pemrosesan gagal: ' + e.message });
@@ -362,19 +355,6 @@ app.post('/api/admin/orders/:id/:action', admin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Lupa kode pesanan: kode dikirim ke email (jawaban selalu sama agar email tidak bisa ditebak).
-app.post('/api/recover', async (req, res) => {
-  const email = String((req.body || {}).email || '').trim().toLowerCase();
-  if (!mail.enabled) return res.status(501).json({ error: 'Email belum diaktifkan, hubungi admin' });
-  if (!/^\S+@\S+\.\S+$/.test(email) || limited(req, email)) return res.status(429).json({ error: 'Coba lagi nanti' });
-  const mine = Object.values(orders).filter(o =>
-    o.kind !== 'renew' && o.serverNumId && o.status === 'active' && o.email.toLowerCase() === email);
-  if (mine.length) {
-    await mail.send(email, 'Kode pesanan Anda',
-      mine.map(o => `Paket ${o.plan}: ${o.id} (aktif sampai ${new Date(o.paidUntil).toLocaleDateString('id-ID')})`).join('\n'));
-  }
-  res.json({ ok: true });
-});
 
 // Tiap 10 menit: tangguhkan server yang masa aktifnya habis. Hapus otomatis hanya jika AUTO_DELETE=true.
 setInterval(async () => {
@@ -384,16 +364,14 @@ setInterval(async () => {
     try {
       if (!o.suspended && !o.reminded && now > o.paidUntil - 3 * 864e5) {
         update(o, { reminded: true });
-        mail.send(o.email, 'Server Anda segera berakhir',
-          `Masa aktif berakhir ${new Date(o.paidUntil).toLocaleDateString('id-ID')}.\nPerpanjang di halaman toko dengan kode pesanan: ${o.id}`);
       }
+
       if (AUTO_DELETE === 'true' && now > o.paidUntil + Number(GRACE_DAYS) * 864e5) {
         await panel(`/servers/${o.serverNumId}`, 'DELETE');
         update(o, { status: 'deleted' });
       } else if (now > o.paidUntil && !o.suspended) {
         await panel(`/servers/${o.serverNumId}/suspend`, 'POST');
         update(o, { suspended: true });
-        mail.send(o.email, 'Server ditangguhkan', `Masa aktif habis. Perpanjang dengan kode pesanan: ${o.id}`);
       }
     } catch (e) { console.error('Scheduler', o.id, e.message); }
   }
